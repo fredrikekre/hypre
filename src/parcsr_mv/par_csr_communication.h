@@ -51,6 +51,7 @@ typedef hypre_ParCSRCommHandle hypre_ParCSRPersistentCommHandle;
 typedef struct _hypre_ParCSRCommPkg
 {
    MPI_Comm                          comm;
+   MPI_Comm                         neighbor_comm;
    HYPRE_Int                         num_sends;
    HYPRE_Int                        *send_procs;
    HYPRE_Int                        *send_map_starts;

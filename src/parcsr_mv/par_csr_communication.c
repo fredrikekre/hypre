@@ -56,6 +56,7 @@ hypre_ParCSRPersistentCommHandleCreate( HYPRE_Int job, hypre_ParCSRCommPkg *comm
    HYPRE_Int num_sends = hypre_ParCSRCommPkgNumSends(comm_pkg);
    HYPRE_Int num_recvs = hypre_ParCSRCommPkgNumRecvs(comm_pkg);
    MPI_Comm  comm      = hypre_ParCSRCommPkgComm(comm_pkg);
+   MPI_Comm  *neighbor_comm = &(comm_pkg->neighbor_comm);
 
    HYPRE_Int num_requests = num_sends + num_recvs;
    hypre_MPI_Request *requests = hypre_CTAlloc(hypre_MPI_Request, num_requests, HYPRE_MEMORY_HOST);
@@ -65,9 +66,18 @@ hypre_ParCSRPersistentCommHandleCreate( HYPRE_Int job, hypre_ParCSRCommPkg *comm
 
    void *send_buff = NULL, *recv_buff = NULL;
 
+   HYPRE_Int *send_sizes = hypre_TAlloc(HYPRE_Int, num_sends, HYPRE_MEMORY_HOST);
+   HYPRE_Int *recv_sizes = hypre_TAlloc(HYPRE_Int, num_recvs, HYPRE_MEMORY_HOST);
+
    switch (job_type)
    {
       case HYPRE_COMM_PKG_JOB_COMPLEX:
+         num_requests = 1;
+         requests = hypre_CTAlloc(hypre_MPI_Request, num_requests, HYPRE_MEMORY_HOST);
+
+         hypre_ParCSRCommHandleNumRequests(comm_handle) = num_requests;
+         hypre_ParCSRCommHandleRequests(comm_handle)    = requests;
+
          num_bytes_send = sizeof(HYPRE_Complex) * hypre_ParCSRCommPkgSendMapStart(comm_pkg, num_sends);
          num_bytes_recv = sizeof(HYPRE_Complex) * hypre_ParCSRCommPkgRecvVecStart(comm_pkg, num_recvs);
          send_buff = hypre_TAlloc(HYPRE_Complex, hypre_ParCSRCommPkgSendMapStart(comm_pkg, num_sends),
@@ -76,20 +86,26 @@ hypre_ParCSRPersistentCommHandleCreate( HYPRE_Int job, hypre_ParCSRCommPkg *comm
                                   HYPRE_MEMORY_HOST);
          for (i = 0; i < num_recvs; ++i)
          {
-            HYPRE_Int ip = hypre_ParCSRCommPkgRecvProc(comm_pkg, i);
-            HYPRE_Int vec_start = hypre_ParCSRCommPkgRecvVecStart(comm_pkg, i);
-            HYPRE_Int vec_len = hypre_ParCSRCommPkgRecvVecStart(comm_pkg, i + 1) - vec_start;
-            hypre_MPI_Recv_init( (HYPRE_Complex *)recv_buff + vec_start, vec_len, HYPRE_MPI_COMPLEX,
-                                 ip, 0, comm, requests + i );
+            recv_sizes[i] = (hypre_ParCSRCommPkgRecvVecStart(comm_pkg, i + 1) -
+                             hypre_ParCSRCommPkgRecvVecStart(comm_pkg, i));
          }
          for (i = 0; i < num_sends; ++i)
          {
-            HYPRE_Int ip = hypre_ParCSRCommPkgSendProc(comm_pkg, i);
-            HYPRE_Int vec_start = hypre_ParCSRCommPkgSendMapStart(comm_pkg, i);
-            HYPRE_Int vec_len = hypre_ParCSRCommPkgSendMapStart(comm_pkg, i + 1) - vec_start;
-            hypre_MPI_Send_init( (HYPRE_Complex *)send_buff + vec_start, vec_len, HYPRE_MPI_COMPLEX,
-                                 ip, 0, comm, requests + num_recvs + i );
+            send_sizes[i] = (hypre_ParCSRCommPkgSendMapStart(comm_pkg, i + 1) -
+                             hypre_ParCSRCommPkgSendMapStart(comm_pkg, i));
          }
+         // TODO: move to comm_pkg creation
+         MPI_Dist_graph_create_adjacent(comm, num_recvs, hypre_ParCSRCommPkgRecvProcs(comm_pkg),
+                                        MPI_UNWEIGHTED, num_sends, hypre_ParCSRCommPkgSendProcs(comm_pkg),
+                                        MPI_UNWEIGHTED, 0, 0, neighbor_comm);
+         MPI_Neighbor_alltoallv_init( (HYPRE_Complex *) send_buff, send_sizes,
+                                      hypre_ParCSRCommPkgSendMapStart(comm_pkg, 0), HYPRE_MPI_COMPLEX,
+                                      (HYPRE_Complex *) recv_buff, recv_sizes,
+                                      hypre_ParCSRCommPkgRecvVecStart(comm_pkg, 0),
+                                      HYPRE_MPI_COMPLEX, *neighbor_comm,
+                                      0, requests);
+         hypre_TFree(send_sizes, HYPRE_MEMORY_HOST);
+         hypre_TFree(recv_sizes, HYPRE_MEMORY_HOST);
          break;
 
       case HYPRE_COMM_PKG_JOB_COMPLEX_TRANSPOSE:
@@ -255,6 +271,7 @@ hypre_ParCSRPersistentCommHandleDestroy( hypre_ParCSRPersistentCommHandle *comm_
    hypre_TFree(hypre_ParCSRCommHandleRecvDataBuffer(comm_handle), HYPRE_MEMORY_HOST);
    hypre_TFree(comm_handle->requests, HYPRE_MEMORY_HOST);
    hypre_TFree(comm_handle, HYPRE_MEMORY_HOST);
+   hypre_MPI_Comm_free(&(comm_handle->comm_pkg->neighbor_comm));
 }
 
 void hypre_ParCSRPersistentCommHandleStart( hypre_ParCSRPersistentCommHandle *comm_handle,
