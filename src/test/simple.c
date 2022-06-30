@@ -14,8 +14,8 @@ hypre_int
 main( hypre_int argc,
       char *argv[] )
 {
-   HYPRE_Init();
    hypre_MPI_Init(&argc, &argv);
+   HYPRE_Init();
 
    /* Generate a Laplacian matrix */
    hypre_ParCSRMatrix *parcsr_A;
