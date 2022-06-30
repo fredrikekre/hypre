@@ -23,7 +23,7 @@ struct hypre_IJVectorAssembleFunctor
 {
    typedef std::tuple<T1, T2> Tuple;
 
-   Tuple operator()(const Tuple& x, const Tuple& y )
+   Tuple operator()(const Tuple& x, const Tuple& y ) const
    {
       return std::make_tuple( hypre_max(std::get<0>(x), std::get<0>(y)),
                                         std::get<1>(x) + std::get<1>(y) );
@@ -247,10 +247,10 @@ hypre_IJVectorAssembleParDevice(hypre_IJVector *vector)
          hypre_assert(std::get<0>(new_end1.base()) - off_proc_i == nelms_off);
 
          /* remove off-proc entries from stack */
-         auto new_end2 = hypreSycl_remove_if( zip_in, /* first */
-                                            zip_in + nelms, /* last */
-                                            is_on_proc, /* stencil */
-      [] (const auto & x) {return x;} );
+         auto new_end2 = hypreSycl_remove_if( zip_in,         /* first */
+                                              zip_in + nelms, /* last */
+                                              is_on_proc,     /* stencil */
+         [] (const auto & x) {return x;} );
 
          hypre_assert(std::get<0>(new_end2.base()) - stack_i == nelms_on);
 #else
@@ -382,7 +382,68 @@ hypre_IJVectorAssembleSortAndReduce1(HYPRE_Int       N0,
 
    /* output X: 0: keep, 1: zero-out */
 #if defined(HYPRE_USING_SYCL)
-   /* WM: todo - HERE!!! */
+   /* WM: double check this... also, is there a better workaround here for lack of reverse iterator in dpl? */
+   HYPRE_Int *reverse_perm = hypre_TAlloc(HYPRE_Int, N0, HYPRE_MEMORY_DEVICE);
+   HYPRE_ONEDPL_CALL( std::transform,
+                      oneapi::dpl::counting_iterator(0),
+                      oneapi::dpl::counting_iterator(N0),
+                      reverse_perm,
+                      [N0] (auto i) { return N0 - i - 1; });
+   HYPRE_ONEDPL_CALL(
+      oneapi::dpl::exclusive_scan_by_segment,
+      oneapi::dpl::make_permutation_iterator(I0, reverse_perm),      /* key begin */
+      oneapi::dpl::make_permutation_iterator(I0, reverse_perm) + N0, /* key end */
+      oneapi::dpl::make_permutation_iterator(X0, reverse_perm),      /* input value begin */
+      oneapi::dpl::make_permutation_iterator(X, reverse_perm),       /* output value begin */
+      char(0),                                                       /* init */
+      std::equal_to<HYPRE_BigInt>(),
+      oneapi::dpl::maximum<char>() );
+   hypre_TFree(reverse_perm, HYPRE_MEMORY_DEVICE);
+
+   hypreSycl_transform_if(A0,
+                          A0 + N0,
+                          X,
+                          A0,
+   [] (const auto & x) {return x;},
+   [] (const auto & x) {return 0.0;} );
+
+   /* WM: debug - todo: uncomment below... having trouble compiling */
+   /* auto new_end = oneapi::dpl::reduce_by_segment( */
+   /*                               oneapi::dpl::execution::make_device_policy<class devutils>(*hypre_HandleComputeStream( hypre_handle())), */
+   /*                               I0,                                                         /1* keys_first *1/ */
+   /*                               I0 + N0,                                                    /1* keys_last *1/ */
+   /*                               oneapi::dpl::make_zip_iterator(X0, A0),                     /1* values_first *1/ */
+   /*                               I,                                                          /1* keys_output *1/ */
+   /*                               oneapi::dpl::make_zip_iterator(X, A0),                      /1* values_output *1/ */
+   /*                               std::equal_to<HYPRE_BigInt>(),                              /1* binary_pred *1/ */
+   /*                               /1* hypre_IJVectorAssembleFunctor<char, HYPRE_Complex>()        /2* binary_op *2/); *1/ */
+   /* [](const std::tuple<char, HYPRE_Complex> &x, const std::tuple<char, HYPRE_Complex> &y ) */
+   /* { */
+   /*    return std::make_tuple( hypre_max(std::get<0>(x), std::get<0>(y)), */
+   /*                                      std::get<1>(x) + std::get<1>(y) ); */
+   /* } ); */
+
+   /* WM: debug - try - for some reason, this at least compiles... */
+   auto new_end = HYPRE_ONEDPL_CALL( oneapi::dpl::reduce_by_segment,
+                                 I0,                                                         /* keys_first */
+                                 I0 + N0,                                                    /* keys_last */
+                                 X0,                     /* values_first */
+                                 I,                                                          /* keys_output */
+                                 X,                      /* values_output */
+                                 std::equal_to<HYPRE_BigInt>(),                              /* binary_pred */
+   [](const auto & x, const auto & y) { return hypre_max(x, y); } );
+
+   /* WM: debug - todo: no matter what I do, I get some kind of compile error on this... seems to be all kinds of issues with reduce_by_segment */
+   /* oneapi::dpl::reduce_by_segment( oneapi::dpl::execution::make_device_policy<class devutils>(*hypre_HandleComputeStream( hypre_handle())), */
+   /* HYPRE_ONEDPL_CALL( oneapi::dpl::reduce_by_segment, */
+   /*                               I0,                                                         /1* keys_first *1/ */
+   /*                               I0 + N0,                                                    /1* keys_last *1/ */
+   /*                               A0,                     /1* values_first *1/ */
+   /*                               I,                                                          /1* keys_output *1/ */
+   /*                               A0,                      /1* values_output *1/ */
+   /*                               std::equal_to<HYPRE_BigInt>(),                              /1* binary_pred *1/ */
+   /* [](const auto & x, const auto & y) { return x + y; } ); */
+
 #else
    HYPRE_THRUST_CALL(
       exclusive_scan_by_key,
@@ -420,10 +481,11 @@ hypre_IJVectorAssembleSortAndReduce3(HYPRE_Int  N0, HYPRE_BigInt  *I0, char *X0,
                                      HYPRE_Int *N1)
 {
 #if defined(HYPRE_USING_SYCL)
-   HYPRE_ONEDPL_CALL( std::stable_sort_by_key,
-                      I0,
-                      I0 + N0,
-                      std::make_zip_iterator(X0, A0) );
+   /* WM: double check this */
+   auto zipped_begin = oneapi::dpl::make_zip_iterator(I0, X0, A0);
+   HYPRE_ONEDPL_CALL( std::stable_sort,
+                      zipped_begin, zipped_begin + N0,
+                      std::less< std::tuple<HYPRE_BigInt, char, HYPRE_Complex> >() );
 #else
    HYPRE_THRUST_CALL( stable_sort_by_key,
                       I0,
@@ -439,22 +501,26 @@ hypre_IJVectorAssembleSortAndReduce3(HYPRE_Int  N0, HYPRE_BigInt  *I0, char *X0,
    /* WM: double check this... also, is there a better workaround here for lack of reverse iterator in dpl? */
    HYPRE_Int *reverse_perm = hypre_TAlloc(HYPRE_Int, N0, HYPRE_MEMORY_DEVICE);
    HYPRE_ONEDPL_CALL( std::transform,
-                      oneapi::dpl::counting_iterator<DiffType>(0),
-                      oneapi::dpl::counting_iterator<DiffType>(N0),
-                      first,
+                      oneapi::dpl::counting_iterator(0),
+                      oneapi::dpl::counting_iterator(N0),
+                      reverse_perm,
                       [N0] (auto i) { return N0 - i - 1; });
    HYPRE_ONEDPL_CALL(
       oneapi::dpl::inclusive_scan_by_segment,
       oneapi::dpl::make_permutation_iterator(I0, reverse_perm), /* key begin */
       oneapi::dpl::make_permutation_iterator(I0, reverse_perm) + N0, /* key end */
       oneapi::dpl::make_permutation_iterator(X0, reverse_perm), /* input value begin */
-      oneapi::dpl::make_permutation_iterator(X0, reverse_perm), /* input value end */
+      oneapi::dpl::make_permutation_iterator(X0, reverse_perm), /* output value begin */
       std::equal_to<HYPRE_BigInt>(),
-      std::maximum<char>() );
+      oneapi::dpl::maximum<char>() );
    hypre_TFree(reverse_perm, HYPRE_MEMORY_DEVICE);
 
-   /* WM: todo - HERE!!! */
-   /* HYPRE_THRUST_CALL(replace_if, A0, A0 + N0, X0, thrust::identity<char>(), 0.0); */
+   hypreSycl_transform_if(A0,
+                          A0 + N0,
+                          X0,
+                          A0,
+   [] (const auto & x) {return x;},
+   [] (const auto & x) {return 0.0;} );
 
    auto new_end = oneapi::dpl::reduce_by_segment(
                                  oneapi::dpl::execution::make_device_policy<class devutils>(*hypre_HandleComputeStream( hypre_handle())),
@@ -490,10 +556,10 @@ hypre_IJVectorAssembleSortAndReduce3(HYPRE_Int  N0, HYPRE_BigInt  *I0, char *X0,
 
    /* remove numerical zeros */
 #if defined(HYPRE_USING_SYCL)
-   auto new_end2 = hypreSycl_copy_if( std::make_zip_iterator(I, A),
-                                      std::make_zip_iterator(I, A) + Nt,
+   auto new_end2 = hypreSycl_copy_if( oneapi::dpl::make_zip_iterator(I, A),
+                                      oneapi::dpl::make_zip_iterator(I, A) + Nt,
                                       A,
-                                      std::make_zip_iterator(I0, A0)),
+                                      oneapi::dpl::make_zip_iterator(I0, A0),
    [] (const auto & x) {return x;} );
 
    *N1 = std::get<0>(new_end2.base()) - I0;

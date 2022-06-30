@@ -58,7 +58,7 @@ Iter3 hypreSycl_transform_if(Iter1 first, Iter1 last, Iter2 mask,
       "Iterators passed to algorithms must be random-access iterators.");
    using T = typename std::iterator_traits<Iter1>::value_type;
    const auto n = std::distance(first, last);
-   auto begin_for_each = make_zip_iterator(first, mask, result);
+   auto begin_for_each = oneapi::dpl::make_zip_iterator(first, mask, result);
    HYPRE_ONEDPL_CALL( std::for_each,
                       begin_for_each, begin_for_each + n,
                       transform_if_unary_zip_mask_fun<T, Pred, UnaryOperation>(pred, unary_op) );
@@ -69,10 +69,9 @@ Iter3 hypreSycl_transform_if(Iter1 first, Iter1 last, Iter2 mask,
 // Used by: copy_if, remove_if
 template <typename Predicate> struct predicate_key_fun
 {
-   typedef bool result_of;
    predicate_key_fun(Predicate _pred) : pred(_pred) {}
 
-   template <typename _T1> result_of operator()(_T1 &&a) const
+   template <typename _T1> bool operator()(_T1 &&a) const
    {
       return pred(std::get<1>(a));
    }
@@ -116,7 +115,7 @@ Iter1 hypreSycl_remove_if(Iter1 first, Iter1 last, Iter2 mask, Pred pred)
       std::is_same<typename std::iterator_traits<Iter2>::iterator_category,
       std::random_access_iterator_tag>::value,
       "Iterators passed to algorithms must be random-access iterators.");
-   using ValueType = typename std::iterator_traits<Iter1>::value_type;
+   using ValueType = typename std::iterator_traits<Iter2>::value_type;
    Iter2 mask_cpy = hypre_CTAlloc(ValueType, std::distance(first, last), HYPRE_MEMORY_DEVICE);
    hypre_TMemcpy(mask_cpy, mask, ValueType, std::distance(first, last), HYPRE_MEMORY_DEVICE, HYPRE_MEMORY_DEVICE);
    auto ret_val = HYPRE_ONEDPL_CALL( std::remove_if,
@@ -145,6 +144,40 @@ Iter3 hypreSycl_remove_copy_if(Iter1 first, Iter1 last, Iter2 mask, Iter3 result
                                      predicate_key_fun<Pred>(pred));
    return std::get<0>(ret_val.base());
 }
+
+/* // Functor for replace_if */
+/* template <typename T, typename Predicate> struct replace_if_fun */
+/* { */
+/* public: */
+/*    replace_if_fun(Predicate _pred, T _new_value) : pred(_pred), new_value(_new_value) {} */
+
+/*    template <typename _T1, typename _T2> T operator()(_T1 &&a, _T2 &&s) const */
+/*    { */
+/*       return pred(s) ? new_value : a; */
+/*    } */
+
+/* private: */
+/*    Predicate pred; */
+/*    const T new_value; */
+/* }; */
+
+/* // Similar to above, need mask version of replace_if */
+/* template <typename Iter1, typename Iter2, typename Pred, typename T> */
+/* void hypreSycl_replace_if(Iter1 first, Iter1 last, Iter2 mask, */
+/*                         Pred pred, T val) */
+/* { */
+/*    static_assert( */
+/*       std::is_same<typename std::iterator_traits<Iter1>::iterator_category, */
+/*       std::random_access_iterator_tag>::value && */
+/*       std::is_same<typename std::iterator_traits<Iter2>::iterator_category, */
+/*       std::random_access_iterator_tag>::value, */
+/*       "Iterators passed to algorithms must be random-access iterators."); */
+/*    auto ret_val = HYPRE_ONEDPL_CALL( std::replace_if, */
+/*                                      oneapi::dpl::make_zip_iterator(first, mask), */
+/*                                      oneapi::dpl::make_zip_iterator(last, mask + std::distance(first, last)), */
+/*                                      oneapi::dpl::make_zip_iterator(result, oneapi::dpl::discard_iterator()), */
+/*                                      predicate_key_fun<Pred>(pred)); */
+/* } */
 
 // Equivalent of thrust::scatter_if
 template <typename InputIter1, typename InputIter2,
