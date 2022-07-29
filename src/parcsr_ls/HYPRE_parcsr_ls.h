@@ -3199,6 +3199,8 @@ HYPRE_Int HYPRE_ParCSRHybridSetRelChange(HYPRE_Solver solver,
 /**
  * Set preconditioner if wanting to use one that is not set up by
  * the hybrid solver.
+ * Note: The Hybrid solver will destroy the preconditioner, so do
+ * not call HYPREDestroy(precond) since that will cause a double free.
  **/
 HYPRE_Int HYPRE_ParCSRHybridSetPrecond(HYPRE_Solver            solver,
                                        HYPRE_PtrToParSolverFcn precond,
